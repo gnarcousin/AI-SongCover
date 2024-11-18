@@ -7,7 +7,7 @@ import webrtcvad
 
 # 사용자 입력
 mode = "Splitting"  # "Separate" 또는 "Splitting" 선택
-audio_name = "IU_Live"  # 처리할 오디오 파일 이름
+audio_name = "Hyunsuck"  # 처리할 오디오 파일 이름
 audio_input_path = os.path.join(".", f"{audio_name}.wav")  # 로컬에서 사용할 WAV 파일 경로
 
 # 결과 저장 폴더 생성
@@ -26,24 +26,34 @@ def separate_audio(audio_path, output_folder):
 class VAD_Slicer:
     def __init__(self, sr, mode=3, frame_duration=30):
         """초기화: WebRTC VAD 설정"""
+        if sr not in [8000, 16000, 32000, 48000]:
+            raise ValueError("WebRTC VAD는 8000, 16000, 32000, 48000 Hz만 지원합니다.")
         self.vad = webrtcvad.Vad(mode)  # 모드: 0 (낮은 민감도) ~ 3 (높은 민감도)
         self.sr = sr
         self.frame_duration = frame_duration  # 밀리초 단위 프레임 지속 시간
         self.frame_size = int(sr * frame_duration / 1000)  # 프레임 크기
+        self.bytes_per_sample = 2  # int16의 바이트 크기
 
     def is_speech(self, frame):
         """주어진 프레임이 음성인지 확인"""
-        return self.vad.is_speech(frame.tobytes(), self.sr)
+        return self.vad.is_speech(frame, self.sr)
 
     def slice(self, waveform):
         """음성을 프레임 단위로 나누어 음성 구간만 반환"""
+        # float32 데이터를 int16로 변환
+        waveform = (waveform * 32767).astype(np.int16)
+
+        # 스테레오 데이터를 모노로 변환
+        if waveform.ndim > 1:
+            waveform = waveform.mean(axis=0).astype(np.int16)
+
         chunks = []
         current_chunk = []
         for i in range(0, len(waveform), self.frame_size):
-            frame = waveform[i:i+self.frame_size]
+            frame = waveform[i:i + self.frame_size]
             if len(frame) < self.frame_size:
                 break
-            if self.is_speech(frame):
+            if self.is_speech(frame.tobytes()):
                 current_chunk.append(frame)
             elif current_chunk:
                 chunks.append(np.concatenate(current_chunk))
@@ -65,10 +75,15 @@ def process_audio():
     if not os.path.exists(vocals_path):
         print(f"파일을 찾을 수 없습니다: {vocals_path}")
         return
-    
+
     # 오디오 파일 로드
     try:
         audio, sr = librosa.load(vocals_path, sr=None, mono=False)
+        if sr not in [8000, 16000, 32000, 48000]:
+            # 리샘플링 수행
+            print(f"지원되지 않는 샘플 속도: {sr} Hz. {16000} Hz로 리샘플링합니다.")
+            audio = librosa.resample(audio, orig_sr=sr, target_sr=16000)
+            sr = 16000
     except FileNotFoundError:
         print(f"파일을 찾을 수 없습니다: {vocals_path}")
         return
@@ -80,8 +95,6 @@ def process_audio():
 
         # 나누어진 음성 파일 저장
         for i, chunk in enumerate(chunks):
-            if chunk.ndim > 1:
-                chunk = chunk.T  # 스테레오 파일을 변환
             output_path = os.path.join(output_folder, f'split_{i}.wav')
             sf.write(output_path, chunk, sr)
             print(f"Saved chunk: {output_path}")
